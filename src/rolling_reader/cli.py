@@ -17,6 +17,7 @@ import asyncio
 import json
 import sys
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -267,30 +268,36 @@ async def _run_batch(
 @app.command(name="chrome")
 def launch_chrome(
     port: int = typer.Option(9222, "--port", "-p", help="Remote debugging port (default: 9222)"),
+    fresh: bool = typer.Option(False, "--fresh", help="Use a clean profile instead of your real Chrome profile"),
 ) -> None:
-    """Launch Chrome with remote debugging enabled.
+    """Launch Chrome with remote debugging, using your real login session.
 
-    Finds Chrome automatically and starts it in the background.
-    After running this, Level 2/3 scraping works immediately.
+    Chrome must be fully closed before running this command.
+    Your existing logins, cookies, and history are preserved.
 
     Example:
 
-        rr chrome
-        rr https://app.example.com/dashboard
+        rr chrome          # close Chrome first, then run this
+        rr https://twitter.com/home   # scrapes with your login
     """
     import subprocess
     import platform
-
     import asyncio
     import time
     import os
-    import tempfile
 
-    # 先检查端口是否已经在用（Chrome 已经以调试模式运行）
+    # 先检查端口是否已经在用（已有调试模式 Chrome）
     if asyncio.run(_check_cdp(port)):
         typer.echo(f"Chrome is already running with remote debugging on port {port}.")
         typer.echo("Ready — run: rr <url>")
         return
+
+    # 检查是否有 Chrome 后台进程，有的话先杀掉
+    # （Chrome 关窗口后仍可能有后台进程，会阻止新实例开调试端口）
+    if _chrome_is_running():
+        typer.echo("Closing Chrome background processes...", err=True)
+        _kill_chrome()
+        time.sleep(3)  # 等进程完全退出
 
     exe = _find_chrome()
     if exe is None:
@@ -301,36 +308,45 @@ def launch_chrome(
         )
         raise typer.Exit(code=1)
 
-    # 用独立的 user-data-dir，避免被已有 Chrome 进程吞掉
-    debug_profile = os.path.join(tempfile.gettempdir(), "rolling-reader-chrome")
-    os.makedirs(debug_profile, exist_ok=True)
+    # rolling-reader 专用的持久化 profile 目录
+    # 每次 rr chrome 都用同一个目录 → 登录状态永久保留
+    profile_dir = os.path.join(Path.home(), ".rolling-reader", "chrome-profile")
+    os.makedirs(profile_dir, exist_ok=True)
+
+    if fresh:
+        import shutil
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        os.makedirs(profile_dir, exist_ok=True)
+        typer.echo("Starting with a fresh profile (login state cleared).", err=True)
+    else:
+        first_time = not any(os.scandir(profile_dir))
+        if first_time:
+            typer.echo(
+                "First run: a new browser profile will open.\n"
+                "Log in to any sites you need — your login state will be saved for next time.",
+                err=True,
+            )
+        else:
+            typer.echo("Using saved profile (your logins are preserved).", err=True)
 
     args = [
         exe,
         f"--remote-debugging-port={port}",
-        f"--user-data-dir={debug_profile}",
+        f"--user-data-dir={profile_dir}",
         "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
     ]
 
-    system = platform.system()
     try:
-        if system == "Windows":
-            subprocess.Popen(
-                args,
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
-        else:
-            subprocess.Popen(args, start_new_session=True, close_fds=True)
+        subprocess.Popen(args, close_fds=True)
     except Exception as e:
         typer.echo(f"Error: failed to launch Chrome: {e}", err=True)
         raise typer.Exit(code=1)
 
-    # 等待 Chrome 初始化调试端口（最多 8 秒）
+    # 等待 Chrome 初始化（最多 15 秒）
     typer.echo("Starting Chrome...", err=True)
-    deadline = time.time() + 8
+    deadline = time.time() + 15
     while time.time() < deadline:
         time.sleep(0.5)
         if asyncio.run(_check_cdp(port)):
@@ -339,8 +355,8 @@ def launch_chrome(
             return
 
     typer.echo(
-        f"Warning: Chrome launched but port {port} is not responding yet.\n"
-        "Wait a moment and try your rr command — it may still be starting up.",
+        "Chrome is starting — if it doesn't respond, make sure all Chrome windows were closed first.\n"
+        "Then retry: rr chrome",
         err=True,
     )
 
@@ -354,6 +370,45 @@ async def _check_cdp(port: int) -> bool:
             return r.status_code == 200
     except Exception:
         return False
+
+
+def _chrome_is_running() -> bool:
+    """检查是否有 Chrome 进程在运行。"""
+    import subprocess, platform
+    if platform.system() == "Windows":
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV"],
+            capture_output=True, text=True,
+        )
+        return "chrome.exe" in r.stdout
+    else:
+        r = subprocess.run(["pgrep", "-x", "chrome", "chromium"], capture_output=True)
+        return r.returncode == 0
+
+
+def _kill_chrome() -> None:
+    """强制关闭所有 Chrome 进程。"""
+    import subprocess, platform
+    if platform.system() == "Windows":
+        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
+                       capture_output=True)
+    else:
+        subprocess.run(["pkill", "-x", "chrome"], capture_output=True)
+        subprocess.run(["pkill", "-x", "chromium"], capture_output=True)
+
+
+def _find_real_chrome_profile() -> Optional[str]:
+    """找到真实 Chrome profile 目录（含登录态、cookies）。"""
+    import platform, os
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("LOCALAPPDATA", "")
+        path = os.path.join(base, "Google", "Chrome", "User Data")
+    elif system == "Darwin":
+        path = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    else:
+        path = os.path.expanduser("~/.config/google-chrome")
+    return path if os.path.isdir(path) else None
 
 
 def _find_chrome() -> Optional[str]:
