@@ -6,15 +6,19 @@ Level 1 — HTTP 直取（httpx + beautifulsoup4）
 核心职责：
   1. 发起 HTTP 请求
   2. 通过 needs_browser() 判断是否需要升级
-  3. 提取 title、正文、链接
+  3. 提取 title、正文、链接（或嵌入 JS state）
   4. 返回 ExtractResult，或 raise NeedsBrowserError
 
-needs_browser() 版本：V3（经过 50+ URL 验证，准确率 96%）
-关键改进：
-  - 检查前剥离 <noscript>，避免 PyPI 类误报
-  - 小页面误判修复：tlen < 200 同时要求 ratio < 0.15
-  - 尺寸感知阈值：大页面（>50KB）用 < 0.018，小页面用 < 0.05
-  - 4xx 直接升级（Level 1 已失败）
+needs_browser() 版本：V4
+新增：
+  - Content-Type application/json → 直接 False（API 端点）
+  - 嵌入 state 保险（含 __NEXT_DATA__ 的页面不升级，L1 直接提取）
+  - 空 main 容器检测（SPA 有 nav/footer 但 <main> 为空）
+沿用 V3：
+  - 剥离 <noscript> 避免误报
+  - 小页面误判修复
+  - 尺寸感知 ratio 阈值
+  - 4xx 直接升级
 """
 
 from __future__ import annotations
@@ -65,22 +69,27 @@ def needs_browser(response: httpx.Response) -> tuple[bool, str]:
     if len(html) == 0:
         return False, ""
 
-    # 2. 4xx → Level 1 已失败，升级（Chrome 通常能绕过 bot 检测 / 登录墙）
+    # 2. Content-Type: application/json → API 端点，永远不需要浏览器
+    content_type = response.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        return False, ""
+
+    # 3. 4xx → Level 1 已失败，升级（Chrome 通常能绕过 bot 检测 / 登录墙）
     if response.status_code in (400, 401, 403, 407):
         return True, f"http_{response.status_code}"
 
-    # 3. 很短的 2xx → SPA shell
+    # 4. 很短的 2xx → SPA shell
     if len(html) < 500:
         return True, "short_response"
 
-    # 4. 解析 HTML，去掉 <noscript>（避免 noscript 里的功能提示触发误判）
+    # 5. 解析 HTML，去掉 <noscript>（避免 noscript 里的功能提示触发误判）
     #    反例：PyPI 在 <noscript> 里写 "Enable javascript to filter wheels"
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup.find_all("noscript"):
         tag.decompose()
     cleaned_html = str(soup).lower()
 
-    # 5. 显式 JS 要求标记
+    # 6. 显式 JS 要求标记
     js_markers = [
         "enable javascript",
         "you need javascript",
@@ -95,23 +104,30 @@ def needs_browser(response: httpx.Response) -> tuple[bool, str]:
         if marker in cleaned_html:
             return True, f"js_marker:{marker[:30]}"
 
-    # 6. 文本内容分析
+    # 7. 文本内容分析
     text_content = soup.get_text(strip=True)
     text_len = len(text_content)
     html_len = len(html)                        # 分母用原始 HTML 保持一致
     text_ratio = text_len / max(html_len, 1)
 
-    # 6a. 极低比例 → 肯定是 SPA（Instagram / YouTube 类型）
+    # 7a. 嵌入 state 保险（在所有 ratio 判定之前）
+    #     含 __NEXT_DATA__ 等嵌入 state 的页面，即使 ratio 极低也不需要浏览器
+    #     L1 直接从 <script> 标签提取结构化数据
+    from rolling_reader.extractor.state import has_embedded_state
+    if has_embedded_state(html):
+        return False, ""
+
+    # 7b. 极低比例 → 肯定是 SPA（Instagram / YouTube 类型）
     if text_ratio < 0.005:
         return True, f"ratio_near_zero:{text_ratio:.4f}"
 
-    # 6b. 文字量极少 + ratio 也低 → SPA shell
+    # 7b. 文字量极少 + ratio 也低 → SPA shell
     #     example.com(tlen=139, ratio=0.263) 不应被触发
     #     Facebook(tlen=111, ratio=0.072) 应被触发
     if text_len < 200 and text_ratio < 0.15:
         return True, f"tiny_shell:tlen={text_len}"
 
-    # 6c. 尺寸感知 ratio 阈值
+    # 7c. 尺寸感知 ratio 阈值
     #     大页面天然 ratio 偏低（大量 HTML 标签）
     #     < 0.018：覆盖 Airtable(0.015)/Notion(0.015)/Replit(0.014) 等 SPA
     #              不触发 GitHub(0.019)/BBC(0.031)/PyPI(0.075)
@@ -121,6 +137,14 @@ def needs_browser(response: httpx.Response) -> tuple[bool, str]:
     else:
         if text_ratio < 0.05:
             return True, f"small_page_low_ratio:{text_ratio:.4f}"
+
+    # 8. 空 main 容器检测：SPA 常见模式——nav/footer 有文字，但 <main> 是空的
+    #    例：React/Vue app 初始渲染前，<main> 里只有 loading spinner
+    main = soup.find("main") or soup.find(attrs={"role": "main"})
+    if main:
+        main_text = main.get_text(strip=True)
+        if len(main_text) < 50 and text_len > 300:
+            return True, f"empty_main:main_tlen={len(main_text)}"
 
     return False, ""
 
@@ -154,6 +178,71 @@ def _extract_text(soup: BeautifulSoup) -> str:
     return "\n".join(lines)
 
 
+def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
+    """
+    提取页面图片 URL，按优先级排序：
+      1. og:image（封面图，最可靠）
+      2. 正文内图片（<main>/<article> 里的 <img>，过滤噪音）
+
+    过滤规则：
+      - 跳过尺寸 < 100px 的图（icon、追踪像素）
+      - 跳过 src 含 icon/logo/avatar/pixel/sprite/badge 的图
+      - 只取 http/https
+    """
+    _NOISE_KEYWORDS = ("icon", "logo", "avatar", "pixel", "sprite", "badge", "tracking", "placeholder", "blank", "spacer")
+
+    def _is_noise(src: str) -> bool:
+        src_lower = src.lower()
+        return any(kw in src_lower for kw in _NOISE_KEYWORDS)
+
+    def _is_too_small(tag) -> bool:
+        for attr in ("width", "height"):
+            val = tag.get(attr, "")
+            try:
+                if int(str(val).replace("px", "")) < 100:
+                    return True
+            except (ValueError, TypeError):
+                pass
+        return False
+
+    def _to_absolute(src: str) -> Optional[str]:
+        if not src or src.startswith("data:"):
+            return None
+        absolute = urljoin(base_url, src)
+        if not absolute.startswith(("http://", "https://")):
+            return None
+        return absolute
+
+    seen: set[str] = set()
+    images: list[str] = []
+
+    def _add(url: str) -> None:
+        if url and url not in seen:
+            seen.add(url)
+            images.append(url)
+
+    # 1. og:image（最优先）
+    og = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "og:image"})
+    if og:
+        src = og.get("content", "").strip()
+        abs_url = _to_absolute(src)
+        if abs_url:
+            _add(abs_url)
+
+    # 2. 正文区域图片
+    container = soup.find("article") or soup.find("main")
+    if container:
+        for img in container.find_all("img", src=True):
+            src = img["src"].strip()
+            if _is_noise(src) or _is_too_small(img):
+                continue
+            abs_url = _to_absolute(src)
+            if abs_url:
+                _add(abs_url)
+
+    return images
+
+
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     """提取所有 <a href> 链接，转为绝对 URL，去重。"""
     seen: set[str] = set()
@@ -183,6 +272,7 @@ async def extract(
     headers: Optional[dict] = None,
     client: Optional[httpx.AsyncClient] = None,
     clean: bool = False,
+    images: bool = False,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -221,6 +311,24 @@ async def extract(
         soup = BeautifulSoup(response.text, "html.parser")
         title = _extract_title(soup)
         links = _extract_links(soup, str(response.url))
+        imgs = _extract_images(soup, str(response.url)) if images else []
+
+        # 尝试从 HTML 中提取嵌入 state（Next.js SSR 等）
+        # 成功则直接返回结构化数据，无需浏览器，速度同 Level 1
+        from rolling_reader.extractor.state import try_extract_state_from_html, state_to_text
+        state_var, state_data = try_extract_state_from_html(response.text)
+        if state_data is not None:
+            return ExtractResult(
+                url=str(response.url),
+                level=1,
+                status_code=response.status_code,
+                title=title,
+                text=state_to_text(state_var, state_data),
+                links=links,
+                images=imgs,
+                elapsed_ms=round(elapsed, 1),
+                state_var=state_var,
+            )
 
         # --clean 模式：用 trafilatura 替换 BeautifulSoup 文本提取
         if clean:
@@ -228,7 +336,7 @@ async def extract(
             cleaned = clean_extract(response.text, url=str(response.url))
             text = cleaned if cleaned else _extract_text(soup)
         else:
-            text = _extract_text(BeautifulSoup(response.text, "html.parser"))
+            text = _extract_text(soup)
 
         return ExtractResult(
             url=str(response.url),
@@ -237,6 +345,7 @@ async def extract(
             title=title,
             text=text,
             links=links,
+            images=imgs,
             elapsed_ms=round(elapsed, 1),
         )
 

@@ -3,7 +3,7 @@ rolling_reader/dispatcher.py
 ========================
 核心调度器：按策略阶梯自动升级。
 
-Level 1 → Level 2 → Level 3（v0.1 只支持到 Level 2）
+Level 1 → Level 2 → Level 3
 
 升级条件：
   - Level 1 抛出 NeedsBrowserError → 升级到 Level 2
@@ -39,6 +39,7 @@ async def dispatch(
     verbose: bool = False,
     use_cache: bool = True,
     clean: bool = False,
+    images: bool = False,
 ) -> ExtractResult:
     """
     自动选择最优抓取策略并执行。
@@ -65,11 +66,11 @@ async def dispatch(
     # ── 强制指定层级 ──────────────────────────────────────────────────────
     if force_level == 1:
         log("forced Level 1 (HTTP)")
-        return await http_extract(url, timeout=http_timeout, clean=clean)
+        return await http_extract(url, timeout=http_timeout, clean=clean, images=images)
 
     if force_level in (2, 3):
         log(f"forced Level 2/3 (CDP)")
-        return await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
+        return await _browser_extract(url, cdp_endpoint, page_timeout, log, clean=clean, images=images)
 
     # ── Profile Cache：命中时直接跳到已知层级 ─────────────────────────────
     if use_cache:
@@ -79,20 +80,19 @@ async def dispatch(
             log(f"cache hit → Level {preferred} for {cached.get('domain')}")
             if preferred == 1:
                 try:
-                    result = await http_extract(url, timeout=http_timeout, clean=clean)
+                    result = await http_extract(url, timeout=http_timeout, clean=clean, images=images)
                     profile_cache.save(url, result.level)
                     return result
-                except Exception:
-                    log("cache: Level 1 failed, invalidating and re-exploring")
+                except (NeedsBrowserError, ExtractionError) as e:
+                    log(f"cache: Level 1 failed ({e.reason}), invalidating and re-exploring")
                     profile_cache.invalidate(url)
             else:
                 try:
-                    result = await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
-                    profile_cache.save(url, result.level,
-                                       state_var=cached.get("state_var"))
+                    result = await _browser_extract(url, cdp_endpoint, page_timeout, log, clean=clean, images=images)
+                    profile_cache.save(url, result.level, state_var=result.state_var)
                     return result
-                except Exception:
-                    log("cache: Level 2 failed, invalidating and re-exploring")
+                except (NeedsBrowserError, ExtractionError) as e:
+                    log(f"cache: browser path failed ({e.reason}), invalidating and re-exploring")
                     profile_cache.invalidate(url)
 
     # ── 自动升级探索 ──────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ async def dispatch(
     # Level 1：HTTP 直取
     log(f"Level 1 → {url}")
     try:
-        result = await http_extract(url, timeout=http_timeout, clean=clean)
+        result = await http_extract(url, timeout=http_timeout, clean=clean, images=images)
         log(f"Level 1 succeeded ({result.elapsed_ms:.0f}ms)")
         if use_cache:
             profile_cache.save(url, result.level)
@@ -113,28 +113,25 @@ async def dispatch(
         log(f"Level 1 → error ({e.reason}), escalating to Level 2/3")
 
     # Level 2/3：CDP + 已有 Chrome（内部自动尝试 Level 3 state 提取）
-    result = await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
+    result = await _browser_extract(url, cdp_endpoint, page_timeout, log, clean=clean, images=images)
     if use_cache:
-        state_var = None
-        if result.level == 3:
-            from rolling_reader.extractor.state import KNOWN_STATE_VARS
-            state_var = KNOWN_STATE_VARS[0]   # v0.1 固定
-        profile_cache.save(url, result.level, state_var=state_var)
+        profile_cache.save(url, result.level, state_var=result.state_var)
     return result
 
 
-async def _try_level2(
+async def _browser_extract(
     url: str,
     cdp_endpoint: str,
     page_timeout: float,
     log,
     *,
     clean: bool = False,
+    images: bool = False,
 ) -> ExtractResult:
-    """尝试 Level 2，Chrome 不可用时给出清晰错误。"""
+    """CDP 路径：尝试 Level 2 DOM 提取，内部自动升级到 Level 3 JS State。"""
     from rolling_reader.extractor.cdp import ChromeNotRunningError
 
-    log(f"Level 2 → {url}")
+    log(f"browser path → {url}")
 
     # 提前探测 Chrome，给出更友好的错误
     if not await is_chrome_available(cdp_endpoint):
@@ -150,8 +147,9 @@ async def _try_level2(
             cdp_endpoint=cdp_endpoint,
             page_timeout=page_timeout,
             clean=clean,
+            images=images,
         )
-        log(f"Level 2 succeeded ({result.elapsed_ms:.0f}ms)")
+        log(f"browser path succeeded L{result.level} ({result.elapsed_ms:.0f}ms)")
         return result
 
     except ChromeNotRunningError:

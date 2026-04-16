@@ -206,3 +206,54 @@ _BROWSER_BUILTINS: frozenset[str] = frozenset({
 def state_to_text(var_name: str, data: Any) -> str:
     """将 JS state 对象序列化为可读文本（JSON 格式）。"""
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Level 1 嵌入 state 提取（无需浏览器）
+# ---------------------------------------------------------------------------
+
+def try_extract_state_from_html(html: str) -> tuple[Optional[str], Optional[Any]]:
+    """
+    从原始 HTML 字符串中提取嵌入的 JS state，无需启动浏览器。
+
+    适用场景：SSR 框架在初始 HTML 里将完整数据序列化为 JSON 注入 <script> 标签。
+    Level 1 HTTP 拿到 HTML 后即可调用，比走 CDP 快 5-10 倍。
+
+    目前支持：
+      - Next.js SSR：<script id="__NEXT_DATA__" type="application/json">
+
+    Returns:
+        (var_name, data) — 成功提取
+        (None, None)     — 未找到或解析失败
+    """
+    from bs4 import BeautifulSoup
+
+    # 快速预检，避免无谓 parse
+    if "__NEXT_DATA__" not in html:
+        return None, None
+
+    soup = BeautifulSoup(html, "html.parser")
+    tag = soup.find("script", id="__NEXT_DATA__")
+    if not tag or not tag.string:
+        return None, None
+
+    raw = tag.string.strip()
+    if len(raw) < 10:
+        return None, None
+
+    try:
+        data = json.loads(raw)
+        # 框架感知：钻入 props.pageProps（同 CDP 路径保持一致）
+        data = _deep_get(data, ["props", "pageProps"])
+        return "window.__NEXT_DATA__", data
+    except (json.JSONDecodeError, Exception):
+        return None, None
+
+
+def has_embedded_state(html: str) -> bool:
+    """
+    快速判断 HTML 中是否含有可在 Level 1 提取的嵌入 state。
+    供 needs_browser() 调用，避免对包含 state 的页面触发不必要的浏览器升级。
+    """
+    # 目前只检测 Next.js（最普遍），后续可扩展
+    return "__NEXT_DATA__" in html and 'id="__NEXT_DATA__"' in html

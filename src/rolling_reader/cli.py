@@ -67,9 +67,10 @@ def scrape_cmd(
     cdp_endpoint: str = typer.Option("http://localhost:9222", "--cdp"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     clean: bool = typer.Option(False, "--clean", "-c"),
+    images: bool = typer.Option(False, "--images", help="Extract og:image and article images"),
 ) -> None:
     """Scrape a single URL."""
-    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean)
+    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images)
 
 
 def _run_scrape(
@@ -81,6 +82,7 @@ def _run_scrape(
     cdp_endpoint: str,
     verbose: bool,
     clean: bool,
+    images: bool = False,
 ) -> None:
     """单 URL 抓取的核心逻辑（被 callback 和 scrape 共用）。"""
     try:
@@ -91,6 +93,7 @@ def _run_scrape(
             verbose=verbose,
             use_cache=not no_cache,
             clean=clean,
+            images=images,
         ))
     except ExtractionError as e:
         _print_error(e)
@@ -297,7 +300,12 @@ def launch_chrome(
     if _chrome_is_running():
         typer.echo("Closing Chrome background processes...", err=True)
         _kill_chrome()
-        time.sleep(3)  # 等进程完全退出
+        # 等进程完全退出（最多 10 秒，比固定 3 秒更可靠）
+        deadline_kill = time.time() + 10
+        while time.time() < deadline_kill:
+            time.sleep(0.5)
+            if not _chrome_is_running():
+                break
 
     exe = _find_chrome()
     if exe is None:
@@ -319,15 +327,22 @@ def launch_chrome(
         os.makedirs(profile_dir, exist_ok=True)
         typer.echo("Starting with a fresh profile (login state cleared).", err=True)
     else:
-        first_time = not any(os.scandir(profile_dir))
-        if first_time:
-            typer.echo(
-                "First run: a new browser profile will open.\n"
-                "Log in to any sites you need — your login state will be saved for next time.",
-                err=True,
-            )
+        # rolling-reader 已有自己的 cookies → 直接用，不覆盖
+        rr_cookies = os.path.join(profile_dir, "Default", "Network", "Cookies")
+        has_own_cookies = os.path.exists(rr_cookies) and os.path.getsize(rr_cookies) > 0
+        if has_own_cookies:
+            typer.echo("Using your saved login state.", err=True)
         else:
-            typer.echo("Using saved profile (your logins are preserved).", err=True)
+            # 首次运行：从真实 Chrome profile 同步 cookies 作为起点
+            synced = _sync_cookies_from_real_profile(str(profile_dir))
+            if synced:
+                typer.echo("Synced cookies from your Chrome profile.", err=True)
+            else:
+                typer.echo(
+                    "First run: a new browser profile will open.\n"
+                    "Log in to any sites you need — your login state will be saved for next time.",
+                    err=True,
+                )
 
     args = [
         exe,
@@ -409,6 +424,50 @@ def _find_real_chrome_profile() -> Optional[str]:
     else:
         path = os.path.expanduser("~/.config/google-chrome")
     return path if os.path.isdir(path) else None
+
+
+def _sync_cookies_from_real_profile(rr_profile: str) -> bool:
+    """
+    从真实 Chrome profile 复制 cookies 到 rolling-reader profile。
+
+    复制内容：
+      - Default/Cookies      — cookie 数据（SQLite）
+      - Local State          — DPAPI 加密密钥（解密 cookies 必须）
+
+    必须在 Chrome 完全关闭后调用（避免 SQLite 锁冲突）。
+
+    Returns:
+        True  — 复制成功
+        False — 真实 profile 不存在或文件不可读
+    """
+    import shutil, os
+
+    real = _find_real_chrome_profile()
+    if not real:
+        return False
+
+    # 需要同步的文件：(源相对路径, 目标相对路径)
+    # Chrome 新版本把 Cookies 移到了 Default/Network/Cookies
+    files_to_copy = [
+        (os.path.join("Default", "Network", "Cookies"), os.path.join("Default", "Network", "Cookies")),
+        (os.path.join("Default", "Cookies"),            os.path.join("Default", "Cookies")),  # 旧版路径保留兼容
+        ("Local State",                                  "Local State"),
+    ]
+
+    copied = 0
+    for src_rel, dst_rel in files_to_copy:
+        src = os.path.join(real, src_rel)
+        dst = os.path.join(rr_profile, dst_rel)
+        if not os.path.exists(src):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            shutil.copy2(src, dst)
+            copied += 1
+        except OSError:
+            pass  # 文件仍被锁（Chrome 未完全退出），跳过
+
+    return copied > 0
 
 
 def _find_chrome() -> Optional[str]:

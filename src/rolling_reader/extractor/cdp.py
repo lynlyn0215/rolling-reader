@@ -33,6 +33,7 @@ from rolling_reader.extractor.http import (
     _extract_title,
     _extract_text,
     _extract_links,
+    _extract_images,
 )
 
 # CDP 端口（可通过环境变量覆盖）
@@ -74,6 +75,7 @@ async def extract(
     page_timeout: float = 30.0,
     wait_networkidle: bool = True,
     clean: bool = False,
+    images: bool = False,
 ) -> ExtractResult:
     """
     Level 2 CDP 抓取。
@@ -166,8 +168,10 @@ async def extract(
     elapsed = (time.perf_counter() - t0) * 1000
 
     # ── 8. Level 3：有 JS state → 直接返回结构化 JSON ─────────────────────
+    soup = BeautifulSoup(html, "html.parser")
+    imgs = _extract_images(soup, final_url) if images else []
+
     if state_data is not None:
-        soup = BeautifulSoup(html, "html.parser")
         return ExtractResult(
             url=final_url,
             level=3,
@@ -175,17 +179,18 @@ async def extract(
             title=_extract_title(soup),
             text=state_to_text(state_var, state_data),
             links=_extract_links(soup, final_url),
+            images=imgs,
             elapsed_ms=round(elapsed, 1),
+            state_var=state_var,
         )
 
     # ── 9. Level 2：回退到 DOM 提取 ───────────────────────────────────────
-    soup = BeautifulSoup(html, "html.parser")
     if clean:
         from rolling_reader.extractor.clean import clean_extract
         cleaned = clean_extract(html, url=final_url)
-        text = cleaned if cleaned else _extract_text(BeautifulSoup(html, "html.parser"))
+        text = cleaned if cleaned else _extract_text(soup)
     else:
-        text = _extract_text(BeautifulSoup(html, "html.parser"))
+        text = _extract_text(soup)
     return ExtractResult(
         url=final_url,
         level=2,
@@ -193,6 +198,7 @@ async def extract(
         title=_extract_title(soup),
         text=text,
         links=_extract_links(soup, final_url),
+        images=imgs,
         elapsed_ms=round(elapsed, 1),
     )
 

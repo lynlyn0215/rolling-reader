@@ -57,6 +57,8 @@ class ExtractResult:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     error: Optional[str] = None
+    state_var: Optional[str] = None  # Level 3 时命中的 JS 变量名（如 window.__NEXT_DATA__）
+    images: list[str] = field(default_factory=list)  # --images 开启时：og:image + 正文图片 URL
 
     # ── 输出格式 ──────────────────────────────────────────────────────────
 
@@ -68,6 +70,7 @@ class ExtractResult:
             "title": self.title,
             "text": self.text,
             "links": self.links,
+            "images": self.images,
             "elapsed_ms": self.elapsed_ms,
             "extracted_at": self.extracted_at,
             "error": self.error,

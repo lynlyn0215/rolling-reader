@@ -137,25 +137,15 @@ def save(url: str, result_level: int, state_var: Optional[str] = None) -> None:
         "failure_count": existing.get("failure_count", 0),
     }
 
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
 def invalidate(url: str) -> None:
-    """提取失败时调用，立即删除缓存配方，触发下次重新探索。"""
-    domain = _domain(url)
-    path = _profile_path(domain)
-    if path.exists():
-        # 增加失败计数，但不删除（保留历史，只标记失效）
-        try:
-            with open(path, encoding="utf-8") as f:
-                profile = json.load(f)
-            profile["failure_count"] = profile.get("failure_count", 0) + 1
-            profile["discovered_at"] = ""   # 清空，下次 load() 会返回 None
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(profile, f, ensure_ascii=False, indent=2)
-        except (json.JSONDecodeError, OSError):
-            path.unlink(missing_ok=True)
+    """提取失败时调用，删除缓存配方，触发下次重新探索。"""
+    _profile_path(_domain(url)).unlink(missing_ok=True)
 
 
 def list_profiles() -> list[dict]:
