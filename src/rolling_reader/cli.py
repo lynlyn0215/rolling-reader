@@ -261,14 +261,155 @@ async def _run_batch(
 
 
 # ---------------------------------------------------------------------------
-# 错误提示
+# rr chrome — 启动 Chrome（带调试端口）
 # ---------------------------------------------------------------------------
+
+@app.command(name="chrome")
+def launch_chrome(
+    port: int = typer.Option(9222, "--port", "-p", help="Remote debugging port (default: 9222)"),
+) -> None:
+    """Launch Chrome with remote debugging enabled.
+
+    Finds Chrome automatically and starts it in the background.
+    After running this, Level 2/3 scraping works immediately.
+
+    Example:
+
+        rr chrome
+        rr https://app.example.com/dashboard
+    """
+    import subprocess
+    import platform
+
+    import asyncio
+    import time
+    import os
+    import tempfile
+
+    # 先检查端口是否已经在用（Chrome 已经以调试模式运行）
+    if asyncio.run(_check_cdp(port)):
+        typer.echo(f"Chrome is already running with remote debugging on port {port}.")
+        typer.echo("Ready — run: rr <url>")
+        return
+
+    exe = _find_chrome()
+    if exe is None:
+        typer.echo(
+            "Error: Chrome not found. Install Google Chrome and try again.\n"
+            "Download: https://www.google.com/chrome/",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # 用独立的 user-data-dir，避免被已有 Chrome 进程吞掉
+    debug_profile = os.path.join(tempfile.gettempdir(), "rolling-reader-chrome")
+    os.makedirs(debug_profile, exist_ok=True)
+
+    args = [
+        exe,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={debug_profile}",
+        "--remote-allow-origins=*",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+    system = platform.system()
+    try:
+        if system == "Windows":
+            subprocess.Popen(
+                args,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(args, start_new_session=True, close_fds=True)
+    except Exception as e:
+        typer.echo(f"Error: failed to launch Chrome: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    # 等待 Chrome 初始化调试端口（最多 8 秒）
+    typer.echo("Starting Chrome...", err=True)
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if asyncio.run(_check_cdp(port)):
+            typer.echo(f"Chrome ready on port {port}.")
+            typer.echo("Now run: rr <url>")
+            return
+
+    typer.echo(
+        f"Warning: Chrome launched but port {port} is not responding yet.\n"
+        "Wait a moment and try your rr command — it may still be starting up.",
+        err=True,
+    )
+
+
+async def _check_cdp(port: int) -> bool:
+    """检查 CDP 端口是否已经在响应。"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            r = await client.get(f"http://localhost:{port}/json/version")
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _find_chrome() -> Optional[str]:
+    """在各平台上自动定位 Chrome 可执行文件。"""
+    import platform
+    import shutil
+
+    system = platform.system()
+
+    if system == "Windows":
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(
+                __import__("os").environ.get("USERNAME", "")
+            ),
+        ]
+        for path in candidates:
+            if __import__("os.path", fromlist=["exists"]).exists(path):
+                return path
+        # 尝试 registry
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+            )
+            path, _ = winreg.QueryValueEx(key, "")
+            if path:
+                return path
+        except Exception:
+            pass
+
+    elif system == "Darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for path in candidates:
+            if __import__("os.path", fromlist=["exists"]).exists(path):
+                return path
+
+    else:  # Linux
+        for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # 真正的 CLI 入口
 # ---------------------------------------------------------------------------
 
-_SUBCOMMANDS = {"batch", "scrape", "--help", "-h", "--version"}
+_SUBCOMMANDS = {"batch", "scrape", "chrome", "--help", "-h", "--version"}
 
 
 def main() -> None:
@@ -292,10 +433,8 @@ def _print_error(e: ExtractionError) -> None:
     if "Chrome is not available" in reason or "Cannot connect to Chrome" in reason:
         typer.echo(
             "\nError: Chrome is not running with remote debugging enabled.\n\n"
-            "Start Chrome first:\n"
-            "  macOS:   open -a 'Google Chrome' --args --remote-debugging-port=9222\n"
-            "  Windows: chrome --remote-debugging-port=9222\n"
-            "  Linux:   google-chrome --remote-debugging-port=9222\n",
+            "Fix: run this first, then retry:\n"
+            "  rr chrome\n",
             err=True,
         )
         return
