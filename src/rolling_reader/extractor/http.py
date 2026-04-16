@@ -1,5 +1,5 @@
 """
-scrapekit/extractor/http.py
+rolling_reader/extractor/http.py
 ============================
 Level 1 — HTTP 直取（httpx + beautifulsoup4）
 
@@ -26,7 +26,7 @@ from typing import Optional
 import httpx
 from bs4 import BeautifulSoup
 
-from scrapekit.models import ExtractResult, NeedsBrowserError, ExtractionError
+from rolling_reader.models import ExtractResult, NeedsBrowserError, ExtractionError
 
 
 # ---------------------------------------------------------------------------

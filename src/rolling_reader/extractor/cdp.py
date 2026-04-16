@@ -1,5 +1,5 @@
 """
-scrapekit/extractor/cdp.py
+rolling_reader/extractor/cdp.py
 ===========================
 Level 2 — CDP + 已有 Chrome Session（Playwright connect_over_cdp）
 
@@ -28,8 +28,8 @@ from typing import Optional
 
 from bs4 import BeautifulSoup
 
-from scrapekit.models import ExtractResult, ExtractionError
-from scrapekit.extractor.http import (
+from rolling_reader.models import ExtractResult, ExtractionError
+from rolling_reader.extractor.http import (
     _extract_title,
     _extract_text,
     _extract_links,
@@ -147,7 +147,7 @@ async def extract(
                     pass
 
             # ── 6. 尝试 Level 3 JS State 提取（在关闭标签页之前）────────────
-            from scrapekit.extractor.state import try_extract_state, state_to_text
+            from rolling_reader.extractor.state import try_extract_state, state_to_text
             state_var, state_data = await try_extract_state(page)
 
             # ── 7. 提取 HTML（Level 2 DOM 路径）──────────────────────────────

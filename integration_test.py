@@ -184,7 +184,7 @@ class CaseResult:
 
 
 def check_result(result, case: IntegrationCase) -> CaseResult:
-    from scrapekit.models import ExtractResult
+    from rolling_reader.models import ExtractResult
     cr = CaseResult(url=case.url, notes=case.notes, expected_level=case.expected_level)
     cr.actual_level = result.level
     cr.level_ok     = result.level == case.expected_level
@@ -207,8 +207,8 @@ async def run_case(
     chrome_available: bool,
     verbose: bool,
 ) -> CaseResult:
-    from scrapekit.dispatcher import dispatch
-    from scrapekit.models import ExtractionError
+    from rolling_reader.dispatcher import dispatch
+    from rolling_reader.models import ExtractionError
 
     if case.requires_chrome and not chrome_available:
         cr = CaseResult(url=case.url, notes=case.notes,
@@ -279,8 +279,8 @@ async def run_all(chrome_available: bool, verbose: bool) -> list[CaseResult]:
 # ---------------------------------------------------------------------------
 
 async def run_cache_test(verbose: bool) -> None:
-    from scrapekit.dispatcher import dispatch
-    from scrapekit.cache import profile as cache
+    from rolling_reader.dispatcher import dispatch
+    from rolling_reader.cache import profile as cache
 
     url = "https://news.ycombinator.com/"
     print(f"\n{'='*72}")
@@ -380,7 +380,7 @@ def print_report(results: list[CaseResult]) -> None:
 # ---------------------------------------------------------------------------
 
 async def main(no_chrome: bool, verbose: bool) -> None:
-    from scrapekit.extractor.cdp import is_chrome_available
+    from rolling_reader.extractor.cdp import is_chrome_available
 
     chrome_available = False
     if not no_chrome:

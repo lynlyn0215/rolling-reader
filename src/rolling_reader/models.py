@@ -1,5 +1,5 @@
 """
-scrapekit/models.py
+rolling_reader/models.py
 ===================
 共享数据类型：ExtractResult、异常类。
 """

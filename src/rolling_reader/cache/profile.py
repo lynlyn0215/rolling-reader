@@ -1,14 +1,14 @@
 """
-scrapekit/cache/profile.py
+rolling_reader/cache/profile.py
 ===========================
 Profile Cache — 按 domain 缓存最优抓取策略。
 
 作用：
-  第一次访问某站点时，ScrapeKit 会探索最优策略（Level 1 / 2 / 3）。
+  第一次访问某站点时，rolling-reader 会探索最优策略（Level 1 / 2 / 3）。
   成功后，将"配方"写入本地 JSON 文件。
   后续请求直接跳到已知的最优层级，跳过探索开销。
 
-存储位置：~/.scrapekit/profiles/<domain>.json
+存储位置：~/.rolling-reader/profiles/<domain>.json
 
 配方格式：
   {
@@ -37,7 +37,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 # 缓存目录
-CACHE_DIR = Path.home() / ".scrapekit" / "profiles"
+CACHE_DIR = Path.home() / ".rolling-reader" / "profiles"
 
 # 配方有效期（天）
 STALE_DAYS = 30

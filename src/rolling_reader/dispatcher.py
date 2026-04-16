@@ -1,5 +1,5 @@
 """
-scrapekit/dispatcher.py
+rolling_reader/dispatcher.py
 ========================
 核心调度器：按策略阶梯自动升级。
 
@@ -20,9 +20,9 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from scrapekit.models import ExtractResult, NeedsBrowserError, ExtractionError
-from scrapekit.extractor import http_extract, cdp_extract, is_chrome_available
-from scrapekit.cache import profile as profile_cache
+from rolling_reader.models import ExtractResult, NeedsBrowserError, ExtractionError
+from rolling_reader.extractor import http_extract, cdp_extract, is_chrome_available
+from rolling_reader.cache import profile as profile_cache
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ async def dispatch(
     """
     def log(msg: str) -> None:
         if verbose:
-            print(f"[scrapekit] {msg}", flush=True)
+            print(f"[rolling-reader] {msg}", flush=True)
 
     # ── 强制指定层级 ──────────────────────────────────────────────────────
     if force_level == 1:
@@ -116,7 +116,7 @@ async def dispatch(
     if use_cache:
         state_var = None
         if result.level == 3:
-            from scrapekit.extractor.state import KNOWN_STATE_VARS
+            from rolling_reader.extractor.state import KNOWN_STATE_VARS
             state_var = KNOWN_STATE_VARS[0]   # v0.1 固定
         profile_cache.save(url, result.level, state_var=state_var)
     return result
@@ -129,7 +129,7 @@ async def _try_level2(
     log,
 ) -> ExtractResult:
     """尝试 Level 2，Chrome 不可用时给出清晰错误。"""
-    from scrapekit.extractor.cdp import ChromeNotRunningError
+    from rolling_reader.extractor.cdp import ChromeNotRunningError
 
     log(f"Level 2 → {url}")
 

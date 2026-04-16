@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "scrapekit-local"
+name = "rolling-reader"
 version = "0.1.0"
 description = "Local-first CLI web scraper with automatic strategy selection"
 requires-python = ">=3.11"
@@ -15,10 +15,10 @@ dependencies = [
 ]
 
 [project.scripts]
-scrape = "scrapekit.cli:app"
+rr = "rolling_reader.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/scrapekit"]
+packages = ["src/rolling_reader"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/"]

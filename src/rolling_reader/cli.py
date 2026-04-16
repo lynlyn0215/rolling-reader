@@ -1,5 +1,5 @@
 """
-scrapekit/cli.py
+rolling_reader/cli.py
 =================
 CLI 入口（typer）
 
@@ -19,8 +19,8 @@ from typing import Optional
 
 import typer
 
-from scrapekit.dispatcher import dispatch
-from scrapekit.models import ExtractionError
+from rolling_reader.dispatcher import dispatch
+from rolling_reader.models import ExtractionError
 
 app = typer.Typer(
     name="scrape",

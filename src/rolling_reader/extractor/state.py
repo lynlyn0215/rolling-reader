@@ -1,5 +1,5 @@
 """
-scrapekit/extractor/state.py
+rolling_reader/extractor/state.py
 =============================
 Level 3 — JS State 提取
 
