@@ -1,15 +1,16 @@
 """
 integration_test.py
 ====================
-ScrapeKit 端到端集成测试
+rolling-reader 端到端集成测试
 
 验证整条链路：dispatcher → extractor → cache
-覆盖：静态页、SPA、Cache 命中、内容质量、错误处理
+覆盖：静态页、SPA、Level 3 JS State、Cache 命中、错误处理
 
 运行：
     python integration_test.py
     python integration_test.py --no-chrome   # 只测 Level 1
     python integration_test.py --verbose
+    python integration_test.py --level3-only # 只测 Level 3 用例（需要 Chrome）
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from typing import Optional
 @dataclass
 class IntegrationCase:
     url: str
-    expected_level: int          # 期望最终使用的层级（1 / 2）
+    expected_level: int          # 期望最终使用的层级（1 / 2 / 3）
     min_title_len: int = 3       # title 至少这么长
     min_text_len: int = 100      # text 至少这么长
     min_links: int = 1           # 至少有这么多链接
@@ -141,16 +142,70 @@ CASES: list[IntegrationCase] = [
         notes="SPA → Level 2",
     ),
     IntegrationCase(
-        "https://vercel.com/", 2,
-        min_title_len=3, min_text_len=50,
-        requires_chrome=True,
-        notes="Next.js → Level 2",
-    ),
-    IntegrationCase(
         "https://dribbble.com/", 2,
         min_title_len=3, min_text_len=50,
         requires_chrome=True,
         notes="SPA → Level 2",
+    ),
+
+    # ── Level 3 JS State（v0.2 新增）────────────────────────────────────
+    # 这些站点的框架会在页面源码里注入完整数据变量，
+    # rolling-reader 应能跳过 DOM 渲染直接提取。
+
+    # Next.js — window.__NEXT_DATA__
+    IntegrationCase(
+        "https://nextjs.org/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Next.js 官网 → __NEXT_DATA__",
+    ),
+    IntegrationCase(
+        "https://vercel.com/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Vercel → __NEXT_DATA__",
+    ),
+    IntegrationCase(
+        "https://www.theverge.com/", 3,
+        min_title_len=3, min_text_len=200, min_links=10,
+        requires_chrome=True,
+        notes="The Verge → __NEXT_DATA__",
+    ),
+    IntegrationCase(
+        "https://www.wired.com/", 3,
+        min_title_len=3, min_text_len=200, min_links=10,
+        requires_chrome=True,
+        notes="Wired → __NEXT_DATA__",
+    ),
+
+    # Nuxt.js — window.__NUXT__
+    IntegrationCase(
+        "https://nuxt.com/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Nuxt 官网 → __NUXT__",
+    ),
+    IntegrationCase(
+        "https://vuejs.org/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Vue.js 官网 → __NUXT__",
+    ),
+
+    # Remix — window.__remixContext
+    IntegrationCase(
+        "https://remix.run/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Remix 官网 → __remixContext",
+    ),
+
+    # auto_scan — 未知变量自动发现
+    IntegrationCase(
+        "https://www.shopify.com/", 3,
+        min_title_len=3, min_text_len=100, min_links=5,
+        requires_chrome=True,
+        notes="Shopify → auto_scan 候选",
     ),
 ]
 
@@ -255,10 +310,20 @@ async def run_case(
         return cr
 
 
-async def run_all(chrome_available: bool, verbose: bool) -> list[CaseResult]:
+async def run_all(
+    chrome_available: bool,
+    verbose: bool,
+    level3_only: bool = False,
+) -> list[CaseResult]:
+    cases = CASES
+    if level3_only:
+        cases = [c for c in CASES if c.expected_level == 3]
+
     print(f"\n{'='*72}")
-    print(f"  ScrapeKit 集成测试")
-    print(f"  URL 总数: {len(CASES)}  |  Chrome: {'✓' if chrome_available else '✗ (Level 2 用例跳过)'}")
+    print(f"  rolling-reader 集成测试")
+    print(f"  URL 总数: {len(cases)}  |  Chrome: {'✓' if chrome_available else '✗ (Level 2/3 用例跳过)'}")
+    if level3_only:
+        print(f"  模式: Level 3 专项")
     print(f"{'='*72}\n")
 
     if verbose:
@@ -267,7 +332,7 @@ async def run_all(chrome_available: bool, verbose: bool) -> list[CaseResult]:
 
     # 逐一执行（不并发，避免 Chrome 多标签冲突）
     results = []
-    for case in CASES:
+    for case in cases:
         r = await run_case(case, chrome_available, verbose)
         results.append(r)
 
@@ -338,10 +403,13 @@ def print_report(results: list[CaseResult]) -> None:
     # 按层级分组
     l1 = [r for r in tested if r.expected_level == 1]
     l2 = [r for r in tested if r.expected_level == 2]
+    l3 = [r for r in tested if r.expected_level == 3]
     l1_ok = [r for r in l1 if r.passed]
     l2_ok = [r for r in l2 if r.passed]
-    print(f"\n  Level 1 静态页: {len(l1_ok)}/{len(l1)} 通过")
-    print(f"  Level 2 SPA:    {len(l2_ok)}/{len(l2)} 通过")
+    l3_ok = [r for r in l3 if r.passed]
+    if l1: print(f"\n  Level 1 静态页:  {len(l1_ok)}/{len(l1)} 通过")
+    if l2: print(f"  Level 2 SPA:     {len(l2_ok)}/{len(l2)} 通过")
+    if l3: print(f"  Level 3 JS State:{len(l3_ok)}/{len(l3)} 通过  ← v0.2 命中率")
 
     if failed:
         print(f"\n  失败详情:")
@@ -379,27 +447,32 @@ def print_report(results: list[CaseResult]) -> None:
 # 入口
 # ---------------------------------------------------------------------------
 
-async def main(no_chrome: bool, verbose: bool) -> None:
+async def main(no_chrome: bool, verbose: bool, level3_only: bool) -> None:
     from rolling_reader.extractor.cdp import is_chrome_available
 
     chrome_available = False
     if not no_chrome:
         chrome_available = await is_chrome_available()
         if not chrome_available:
-            print("⚠  Chrome 未运行，Level 2 用例将跳过")
+            print("⚠  Chrome 未运行，Level 2/3 用例将跳过")
             print("   启动命令: chrome --remote-debugging-port=9222\n")
 
-    results = await run_all(chrome_available, verbose)
+    results = await run_all(chrome_available, verbose, level3_only=level3_only)
     print_report(results)
-    await run_cache_test(verbose)
+
+    # Level 3 专项模式跳过 cache 测试
+    if not level3_only:
+        await run_cache_test(verbose)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-chrome", action="store_true",
                         help="跳过所有需要 Chrome 的用例")
+    parser.add_argument("--level3-only", action="store_true",
+                        help="只测 Level 3 JS State 用例（需要 Chrome）")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="逐条打印结果")
     args = parser.parse_args()
 
-    asyncio.run(main(args.no_chrome, args.verbose))
+    asyncio.run(main(args.no_chrome, args.verbose, args.level3_only))
