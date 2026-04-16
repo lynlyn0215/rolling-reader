@@ -94,7 +94,11 @@ async def extract(
     try:
         from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
     except ImportError as e:
-        raise ExtractionError(url, "playwright not installed: pip install playwright") from e
+        raise ExtractionError(
+            url,
+            "playwright is not installed. Run: pip install rolling-reader\n"
+            "  (playwright is a dependency — if you see this, your install may be incomplete)"
+        ) from e
 
     t0 = time.perf_counter()
 
