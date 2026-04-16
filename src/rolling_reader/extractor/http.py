@@ -24,13 +24,89 @@ needs_browser() 版本：V4
 from __future__ import annotations
 
 import time
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 from typing import Optional
+import json
 
 import httpx
 from bs4 import BeautifulSoup
 
 from rolling_reader.models import ExtractResult, NeedsBrowserError, ExtractionError
+
+
+# ---------------------------------------------------------------------------
+# RSS / Atom 检测与结构化解析
+# ---------------------------------------------------------------------------
+
+_RSS_NS = {
+    "dc":      "http://purl.org/dc/elements/1.1/",
+    "content": "http://purl.org/rss/1.0/modules/content/",
+    "media":   "http://search.yahoo.com/mrss/",
+    "atom":    "http://www.w3.org/2005/Atom",
+}
+
+
+def _is_feed(response: httpx.Response) -> bool:
+    """判断响应是否为 RSS / Atom feed。"""
+    ct = response.headers.get("content-type", "").lower()
+    if any(x in ct for x in ("application/rss", "application/atom", "application/xml", "text/xml")):
+        return True
+    # Content-Type 不可靠时，看前 200 字节
+    snippet = response.text[:200].lstrip()
+    return snippet.startswith("<?xml") or "<rss" in snippet or "<feed" in snippet
+
+
+def _parse_feed(text: str, base_url: str) -> list[dict]:
+    """
+    解析 RSS 2.0 / Atom feed，返回 item 列表。
+    每个 item 包含：title, link, description, pub_date, author, categories
+    """
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+
+    items: list[dict] = []
+
+    # ── RSS 2.0 ──────────────────────────────────────────────────────────
+    channel = root.find("channel")
+    if channel is not None:
+        for item in channel.findall("item"):
+            def rss_get(tag: str, ns: str = "") -> str:
+                el = item.find(f"{{{ns}}}{tag}" if ns else tag)
+                return (el.text or "").strip() if el is not None else ""
+
+            cats = [c.text.strip() for c in item.findall("category") if c.text]
+            items.append({
+                "title":       rss_get("title"),
+                "link":        rss_get("link"),
+                "description": rss_get("description"),
+                "pub_date":    rss_get("pubDate"),
+                "author":      rss_get("creator", _RSS_NS["dc"]) or rss_get("author"),
+                "categories":  cats,
+            })
+        return items
+
+    # ── Atom ─────────────────────────────────────────────────────────────
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall("a:entry", ns):
+        def atom_get(tag: str) -> str:
+            el = entry.find(f"a:{tag}", ns)
+            return (el.text or "").strip() if el is not None else ""
+
+        link_el = entry.find("a:link", ns)
+        link = link_el.get("href", "") if link_el is not None else ""
+        items.append({
+            "title":       atom_get("title"),
+            "link":        link,
+            "description": atom_get("summary") or atom_get("content"),
+            "pub_date":    atom_get("updated") or atom_get("published"),
+            "author":      atom_get("name"),
+            "categories":  [],
+        })
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +349,7 @@ async def extract(
     client: Optional[httpx.AsyncClient] = None,
     clean: bool = False,
     images: bool = False,
+    rss: bool = False,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -306,6 +383,21 @@ async def extract(
         browser_needed, reason = needs_browser(response)
         if browser_needed:
             raise NeedsBrowserError(url, reason)
+
+        # ── RSS / Atom 自动检测 ──────────────────────────────────────────
+        #    rss=True 强制解析；或自动检测到 feed 格式时也走结构化路径
+        if rss or _is_feed(response):
+            feed_items = _parse_feed(response.text, str(response.url))
+            if feed_items:
+                return ExtractResult(
+                    url=str(response.url),
+                    level=1,
+                    status_code=response.status_code,
+                    title=f"RSS Feed ({len(feed_items)} items)",
+                    text=json.dumps(feed_items, ensure_ascii=False, indent=2),
+                    links=[item["link"] for item in feed_items if item.get("link")],
+                    elapsed_ms=round(elapsed, 1),
+                )
 
         # 解析内容
         soup = BeautifulSoup(response.text, "html.parser")

@@ -68,9 +68,10 @@ def scrape_cmd(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
     clean: bool = typer.Option(False, "--clean", "-c"),
     images: bool = typer.Option(False, "--images", help="Extract og:image and article images"),
+    rss: bool = typer.Option(False, "--rss", help="Parse RSS/Atom feeds into structured JSON array"),
 ) -> None:
     """Scrape a single URL."""
-    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images)
+    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images, rss)
 
 
 def _run_scrape(
@@ -83,6 +84,7 @@ def _run_scrape(
     verbose: bool,
     clean: bool,
     images: bool = False,
+    rss: bool = False,
 ) -> None:
     """单 URL 抓取的核心逻辑（被 callback 和 scrape 共用）。"""
     try:
@@ -94,6 +96,7 @@ def _run_scrape(
             use_cache=not no_cache,
             clean=clean,
             images=images,
+            rss=rss,
         ))
     except ExtractionError as e:
         _print_error(e)

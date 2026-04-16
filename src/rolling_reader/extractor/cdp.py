@@ -128,21 +128,33 @@ async def extract(
         page = await context.new_page()
 
         try:
-            # ── 4. 导航 ───────────────────────────────────────────────────
+            # ── 4. 导航（捕获真实 HTTP 状态码）──────────────────────────────
+            actual_status: int = 200
             try:
-                await page.goto(
+                nav_response = await page.goto(
                     url,
                     wait_until=WAIT_UNTIL,
                     timeout=page_timeout * 1000,
                 )
+                if nav_response is not None:
+                    actual_status = nav_response.status
             except PlaywrightTimeout as e:
                 raise ExtractionError(url, f"page load timeout: {e}") from e
             except Exception as e:
                 raise ExtractionError(url, f"navigation error: {e}") from e
 
-            # ── 5. 等待 networkidle（可选，给 SPA 时间完成渲染）───────────
-            #    文档说 networkidle 不推荐用于 CI 测试（flaky），
-            #    但对爬虫来说是正确选择：等 JS 执行完毕再抓 DOM
+            # ── 5. Cloudflare / WAF 拦截检测 ─────────────────────────────────
+            #    403/429/503 说明服务器拒绝了请求（bot 检测或登录墙）
+            #    直接报错，避免把拦截页正文当正常内容返回
+            if actual_status in (403, 429, 503):
+                raise ExtractionError(
+                    url,
+                    f"server rejected with HTTP {actual_status} "
+                    "(bot-detection / Cloudflare / login wall). "
+                    "Try: log in via 'rr chrome' first.",
+                )
+
+            # ── 6. 等待 networkidle（可选，给 SPA 时间完成渲染）───────────
             if wait_networkidle:
                 try:
                     await page.wait_for_load_state(
@@ -150,14 +162,13 @@ async def extract(
                         timeout=NETWORK_IDLE_TIMEOUT,
                     )
                 except PlaywrightTimeout:
-                    # networkidle 超时不致命，继续提取已有内容
-                    pass
+                    pass  # 非致命
 
-            # ── 6. 尝试 Level 3 JS State 提取（在关闭标签页之前）────────────
+            # ── 7. 尝试 Level 3 JS State 提取（在关闭标签页之前）────────────
             from rolling_reader.extractor.state import try_extract_state, state_to_text
             state_var, state_data = await try_extract_state(page)
 
-            # ── 7. 提取 HTML（Level 2 DOM 路径）──────────────────────────────
+            # ── 8. 提取 HTML（Level 2 DOM 路径）──────────────────────────────
             html = await page.content()
             final_url = page.url
 
@@ -175,7 +186,7 @@ async def extract(
         return ExtractResult(
             url=final_url,
             level=3,
-            status_code=200,
+            status_code=actual_status,
             title=_extract_title(soup),
             text=state_to_text(state_var, state_data),
             links=_extract_links(soup, final_url),
@@ -194,7 +205,7 @@ async def extract(
     return ExtractResult(
         url=final_url,
         level=2,
-        status_code=200,
+        status_code=actual_status,
         title=_extract_title(soup),
         text=text,
         links=_extract_links(soup, final_url),
