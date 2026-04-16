@@ -73,6 +73,7 @@ async def extract(
     cdp_endpoint: str = CDP_ENDPOINT,
     page_timeout: float = 30.0,
     wait_networkidle: bool = True,
+    clean: bool = False,
 ) -> ExtractResult:
     """
     Level 2 CDP 抓取。
@@ -175,12 +176,18 @@ async def extract(
 
     # ── 9. Level 2：回退到 DOM 提取 ───────────────────────────────────────
     soup = BeautifulSoup(html, "html.parser")
+    if clean:
+        from rolling_reader.extractor.clean import clean_extract
+        cleaned = clean_extract(html, url=final_url)
+        text = cleaned if cleaned else _extract_text(BeautifulSoup(html, "html.parser"))
+    else:
+        text = _extract_text(BeautifulSoup(html, "html.parser"))
     return ExtractResult(
         url=final_url,
         level=2,
         status_code=200,
         title=_extract_title(soup),
-        text=_extract_text(BeautifulSoup(html, "html.parser")),
+        text=text,
         links=_extract_links(soup, final_url),
         elapsed_ms=round(elapsed, 1),
     )

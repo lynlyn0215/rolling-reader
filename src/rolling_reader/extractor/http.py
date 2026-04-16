@@ -182,6 +182,7 @@ async def extract(
     timeout: float = 15.0,
     headers: Optional[dict] = None,
     client: Optional[httpx.AsyncClient] = None,
+    clean: bool = False,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -219,8 +220,15 @@ async def extract(
         # 解析内容
         soup = BeautifulSoup(response.text, "html.parser")
         title = _extract_title(soup)
-        text  = _extract_text(BeautifulSoup(response.text, "html.parser"))  # 用新 soup 避免修改影响
         links = _extract_links(soup, str(response.url))
+
+        # --clean 模式：用 trafilatura 替换 BeautifulSoup 文本提取
+        if clean:
+            from rolling_reader.extractor.clean import clean_extract
+            cleaned = clean_extract(response.text, url=str(response.url))
+            text = cleaned if cleaned else _extract_text(soup)
+        else:
+            text = _extract_text(BeautifulSoup(response.text, "html.parser"))
 
         return ExtractResult(
             url=str(response.url),

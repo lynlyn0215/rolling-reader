@@ -90,6 +90,11 @@ def scrape(
         "--verbose", "-v",
         help="Print escalation steps to stderr",
     ),
+    clean: bool = typer.Option(
+        False,
+        "--clean", "-c",
+        help="Extract article body only, filtering out navigation, ads, and footers",
+    ),
 ) -> None:
     """Scrape a URL and output structured data."""
 
@@ -101,6 +106,7 @@ def scrape(
                 cdp_endpoint=cdp_endpoint,
                 verbose=verbose,
                 use_cache=not no_cache,
+                clean=clean,
             )
         )
     except ExtractionError as e:

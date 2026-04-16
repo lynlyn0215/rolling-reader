@@ -38,6 +38,7 @@ async def dispatch(
     page_timeout: float = 30.0,
     verbose: bool = False,
     use_cache: bool = True,
+    clean: bool = False,
 ) -> ExtractResult:
     """
     自动选择最优抓取策略并执行。
@@ -64,11 +65,11 @@ async def dispatch(
     # ── 强制指定层级 ──────────────────────────────────────────────────────
     if force_level == 1:
         log("forced Level 1 (HTTP)")
-        return await http_extract(url, timeout=http_timeout)
+        return await http_extract(url, timeout=http_timeout, clean=clean)
 
     if force_level in (2, 3):
         log(f"forced Level 2/3 (CDP)")
-        return await _try_level2(url, cdp_endpoint, page_timeout, log)
+        return await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
 
     # ── Profile Cache：命中时直接跳到已知层级 ─────────────────────────────
     if use_cache:
@@ -78,7 +79,7 @@ async def dispatch(
             log(f"cache hit → Level {preferred} for {cached.get('domain')}")
             if preferred == 1:
                 try:
-                    result = await http_extract(url, timeout=http_timeout)
+                    result = await http_extract(url, timeout=http_timeout, clean=clean)
                     profile_cache.save(url, result.level)
                     return result
                 except Exception:
@@ -86,7 +87,7 @@ async def dispatch(
                     profile_cache.invalidate(url)
             else:
                 try:
-                    result = await _try_level2(url, cdp_endpoint, page_timeout, log)
+                    result = await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
                     profile_cache.save(url, result.level,
                                        state_var=cached.get("state_var"))
                     return result
@@ -99,7 +100,7 @@ async def dispatch(
     # Level 1：HTTP 直取
     log(f"Level 1 → {url}")
     try:
-        result = await http_extract(url, timeout=http_timeout)
+        result = await http_extract(url, timeout=http_timeout, clean=clean)
         log(f"Level 1 succeeded ({result.elapsed_ms:.0f}ms)")
         if use_cache:
             profile_cache.save(url, result.level)
@@ -112,7 +113,7 @@ async def dispatch(
         log(f"Level 1 → error ({e.reason}), escalating to Level 2/3")
 
     # Level 2/3：CDP + 已有 Chrome（内部自动尝试 Level 3 state 提取）
-    result = await _try_level2(url, cdp_endpoint, page_timeout, log)
+    result = await _try_level2(url, cdp_endpoint, page_timeout, log, clean=clean)
     if use_cache:
         state_var = None
         if result.level == 3:
@@ -127,6 +128,8 @@ async def _try_level2(
     cdp_endpoint: str,
     page_timeout: float,
     log,
+    *,
+    clean: bool = False,
 ) -> ExtractResult:
     """尝试 Level 2，Chrome 不可用时给出清晰错误。"""
     from rolling_reader.extractor.cdp import ChromeNotRunningError
@@ -146,6 +149,7 @@ async def _try_level2(
             url,
             cdp_endpoint=cdp_endpoint,
             page_timeout=page_timeout,
+            clean=clean,
         )
         log(f"Level 2 succeeded ({result.elapsed_ms:.0f}ms)")
         return result
