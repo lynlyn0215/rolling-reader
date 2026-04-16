@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rolling-reader"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local-first web scraper that automatically rolls through HTTP → browser → JS state extraction"
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rr = "rolling_reader.cli:app"
+rr = "rolling_reader.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rolling_reader"]

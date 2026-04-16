@@ -56,47 +56,32 @@ def _resolve_json_path(data: dict, path: str):
 # 单 URL 命令
 # ---------------------------------------------------------------------------
 
-@app.command()
-def scrape(
+@app.command(name="scrape", hidden=True)  # rr scrape <url>（隐藏，推荐直接 rr <url>）
+def scrape_cmd(
     url: str = typer.Argument(..., help="Target URL to scrape"),
-    output: OutputFormat = typer.Option(
-        OutputFormat.json,
-        "--output", "-o",
-        help="Output format: json (default) or md (markdown)",
-    ),
-    force_level: Optional[int] = typer.Option(
-        None,
-        "--force-level", "-l",
-        help="Force a specific extraction level (1=HTTP, 2=CDP, 3=JS state)",
-        min=1, max=3,
-    ),
-    json_path: Optional[str] = typer.Option(
-        None,
-        "--json-path", "-p",
-        help=(
-            "Dot-notation path into the result JSON. "
-            "Top-level keys: url, level, title, text, links, elapsed_ms."
-        ),
-    ),
-    no_cache: bool = typer.Option(
-        False, "--no-cache",
-        help="Bypass profile cache and always re-explore the best strategy",
-    ),
-    cdp_endpoint: str = typer.Option(
-        "http://localhost:9222", "--cdp",
-        help="Chrome DevTools endpoint",
-    ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v",
-        help="Print escalation steps to stderr",
-    ),
-    clean: bool = typer.Option(
-        False, "--clean", "-c",
-        help="Extract article body only, filtering out navigation, ads, and footers",
-    ),
+    output: OutputFormat = typer.Option(OutputFormat.json, "--output", "-o"),
+    force_level: Optional[int] = typer.Option(None, "--force-level", "-l", min=1, max=3),
+    json_path: Optional[str] = typer.Option(None, "--json-path", "-p"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    cdp_endpoint: str = typer.Option("http://localhost:9222", "--cdp"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+    clean: bool = typer.Option(False, "--clean", "-c"),
 ) -> None:
-    """Scrape a single URL and output structured data."""
+    """Scrape a single URL."""
+    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean)
 
+
+def _run_scrape(
+    url: str,
+    output: OutputFormat,
+    force_level: Optional[int],
+    json_path: Optional[str],
+    no_cache: bool,
+    cdp_endpoint: str,
+    verbose: bool,
+    clean: bool,
+) -> None:
+    """单 URL 抓取的核心逻辑（被 callback 和 scrape 共用）。"""
     try:
         result = asyncio.run(dispatch(
             url,
@@ -273,6 +258,29 @@ async def _run_batch(
 
     await asyncio.gather(*[fetch(i, u) for i, u in enumerate(urls)])
     return results  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# 错误提示
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 真正的 CLI 入口
+# ---------------------------------------------------------------------------
+
+_SUBCOMMANDS = {"batch", "scrape", "--help", "-h", "--version"}
+
+
+def main() -> None:
+    """
+    入口包装：让 `rr <url>` 直接工作，无需写 `rr scrape <url>`。
+
+    如果第一个参数不是已知子命令，自动在前面插入 'scrape'。
+    """
+    args = sys.argv[1:]
+    if args and not args[0].startswith("-") and args[0] not in _SUBCOMMANDS:
+        sys.argv.insert(1, "scrape")
+    app()
 
 
 # ---------------------------------------------------------------------------
