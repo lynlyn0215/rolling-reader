@@ -127,6 +127,12 @@ DEFAULT_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
+# Wikipedia（Wikimedia）明确要求 bot 提供可识别的 User-Agent，
+# 拒绝伪装成普通浏览器的请求（HAProxy 返回 403）。
+# 参见：https://w.wiki/4wJS / phabricator T400119
+WIKIMEDIA_UA = "rolling-reader/0.6.6 (+https://github.com/lynlyn0215/rolling-reader)"
+_WIKIMEDIA_HOSTS = ("wikipedia.org", "wikimedia.org", "wikidata.org", "mediawiki.org")
+
 
 # ---------------------------------------------------------------------------
 # needs_browser() — V3
@@ -206,9 +212,10 @@ def needs_browser(response: httpx.Response) -> tuple[bool, str]:
     # 7c. 尺寸感知 ratio 阈值
     #     大页面天然 ratio 偏低（大量 HTML 标签）
     #     < 0.018：覆盖 Airtable(0.015)/Notion(0.015)/Replit(0.014) 等 SPA
-    #              不触发 GitHub(0.019)/BBC(0.031)/PyPI(0.075)
+    #     保险：text_len > 3000 说明页面有实质内容（SSR），不是空 SPA shell
+    #     例：GitHub repo 页面 ratio≈0.015 但 text_len≈4900，属于 SSR 内容
     if html_len > 50_000:
-        if text_ratio < 0.018:
+        if text_ratio < 0.018 and text_len < 3000:
             return True, f"large_page_low_ratio:{text_ratio:.4f}"
     else:
         if text_ratio < 0.05:
@@ -367,7 +374,13 @@ async def extract(
         NeedsBrowserError: 页面需要浏览器渲染
         ExtractionError:   请求或解析失败
     """
-    merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
+    # Wikimedia 系站点需要特殊 User-Agent（不能伪装成浏览器）
+    parsed_host = urlparse(url).hostname or ""
+    if any(parsed_host.endswith(h) for h in _WIKIMEDIA_HOSTS):
+        ua_override = {"User-Agent": WIKIMEDIA_UA}
+    else:
+        ua_override = {}
+    merged_headers = {**DEFAULT_HEADERS, **(headers or {}), **ua_override}
 
     async def _do_request(c: httpx.AsyncClient) -> ExtractResult:
         t0 = time.perf_counter()

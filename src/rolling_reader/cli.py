@@ -101,6 +101,18 @@ def _run_scrape(
     except ExtractionError as e:
         _print_error(e)
         raise typer.Exit(code=1)
+    except Exception as e:
+        # NeedsBrowserError（force-level 1 时不会自动升级）等未预期异常
+        from rolling_reader.models import NeedsBrowserError
+        if isinstance(e, NeedsBrowserError):
+            typer.echo(
+                f"\nError: page requires browser rendering ({e.reason})\n\n"
+                "Try: rr <url> --force-level 2  (requires: rr chrome)\n",
+                err=True,
+            )
+        else:
+            typer.echo(f"\nError: {e}\n", err=True)
+        raise typer.Exit(code=1)
     except KeyboardInterrupt:
         raise typer.Exit(code=130)
 
