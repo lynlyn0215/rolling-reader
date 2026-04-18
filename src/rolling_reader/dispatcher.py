@@ -44,6 +44,7 @@ async def dispatch(
     rss: bool = False,
     retries: int = 2,
     meta: bool = False,
+    select: Optional[str] = None,
 ) -> ExtractResult:
     """
     自动选择最优抓取策略并执行。
@@ -70,7 +71,7 @@ async def dispatch(
     # ── 强制指定层级 ──────────────────────────────────────────────────────
     if force_level == 1:
         log("forced Level 1 (HTTP)")
-        return await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
+        return await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta, select=select)
 
     if force_level in (2, 3):
         log(f"forced Level 2/3 (CDP)")

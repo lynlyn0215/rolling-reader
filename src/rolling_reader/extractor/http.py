@@ -460,6 +460,7 @@ async def extract(
     rss: bool = False,
     retries: int = 2,
     meta: bool = False,
+    select: Optional[str] = None,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -572,8 +573,21 @@ async def extract(
                 state_var=state_var,
             )
 
+        # --select 模式：只提取 CSS 选择器匹配的节点文字
+        if select:
+            try:
+                matched = soup.select(select)
+            except Exception:
+                matched = []
+            if matched:
+                parts = [el.get_text(separator="\n", strip=True) for el in matched]
+                text = "\n\n".join(p for p in parts if p)
+            else:
+                import sys
+                print(f"rr: --select '{select}' matched no elements", file=sys.stderr)
+                text = ""
         # --clean 模式：用 trafilatura 替换 BeautifulSoup 文本提取
-        if clean:
+        elif clean:
             from rolling_reader.extractor.clean import clean_extract
             cleaned = clean_extract(response.text, url=str(response.url))
             text = cleaned if cleaned else _extract_text(soup)

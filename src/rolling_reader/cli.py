@@ -72,9 +72,10 @@ def scrape_cmd(
     retries: int = typer.Option(2, "--retries", help="Max retries on 429/503 (default: 2)"),
     text: bool = typer.Option(False, "--text", help="Output only the text content to stdout (pipeline-friendly)"),
     meta: bool = typer.Option(False, "--meta", help="Extract structured metadata (og:*, JSON-LD, published time, author)"),
+    select: Optional[str] = typer.Option(None, "--select", "-s", help="CSS selector: extract only matching elements (e.g. 'article', '.post-body', 'h1,p')"),
 ) -> None:
     """Scrape a single URL."""
-    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images, rss, retries, text, meta)
+    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images, rss, retries, text, meta, select)
 
 
 def _run_scrape(
@@ -91,6 +92,7 @@ def _run_scrape(
     retries: int = 2,
     text: bool = False,
     meta: bool = False,
+    select: Optional[str] = None,
 ) -> None:
     """单 URL 抓取的核心逻辑（被 callback 和 scrape 共用）。"""
     try:
@@ -105,6 +107,7 @@ def _run_scrape(
             rss=rss,
             retries=retries,
             meta=meta,
+            select=select,
         ))
     except ExtractionError as e:
         _print_error(e)
