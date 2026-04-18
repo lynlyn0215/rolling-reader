@@ -42,6 +42,7 @@ async def dispatch(
     images: bool = False,
     rss: bool = False,
     retries: int = 2,
+    meta: bool = False,
 ) -> ExtractResult:
     """
     自动选择最优抓取策略并执行。
@@ -68,7 +69,7 @@ async def dispatch(
     # ── 强制指定层级 ──────────────────────────────────────────────────────
     if force_level == 1:
         log("forced Level 1 (HTTP)")
-        return await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries)
+        return await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
 
     if force_level in (2, 3):
         log(f"forced Level 2/3 (CDP)")
@@ -82,7 +83,7 @@ async def dispatch(
             log(f"cache hit → Level {preferred} for {cached.get('domain')}")
             if preferred == 1:
                 try:
-                    result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries)
+                    result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
                     profile_cache.save(url, result.level)
                     return result
                 except (NeedsBrowserError, ExtractionError) as e:
@@ -102,7 +103,7 @@ async def dispatch(
     # Level 1：HTTP 直取
     log(f"Level 1 → {url}")
     try:
-        result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries)
+        result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
         log(f"Level 1 succeeded ({result.elapsed_ms:.0f}ms)")
         if use_cache:
             profile_cache.save(url, result.level)

@@ -59,6 +59,7 @@ class ExtractResult:
     error: Optional[str] = None
     state_var: Optional[str] = None  # Level 3 时命中的 JS 变量名（如 window.__NEXT_DATA__）
     images: list[str] = field(default_factory=list)  # --images 开启时：og:image + 正文图片 URL
+    meta: dict = field(default_factory=dict)          # --meta 开启时：og:*、JSON-LD、发布时间等
 
     # ── 输出格式 ──────────────────────────────────────────────────────────
 
@@ -71,6 +72,7 @@ class ExtractResult:
             "text": self.text,
             "links": self.links,
             "images": self.images,
+            "meta": self.meta,
             "elapsed_ms": self.elapsed_ms,
             "extracted_at": self.extracted_at,
             "error": self.error,

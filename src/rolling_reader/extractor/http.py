@@ -326,6 +326,107 @@ def _extract_images(soup: BeautifulSoup, base_url: str) -> list[str]:
     return images
 
 
+def _extract_meta(soup: BeautifulSoup, base_url: str) -> dict:
+    """
+    提取页面结构化元数据：
+      - Open Graph (og:title/description/type/image/url)
+      - Article (article:published_time/modified_time/author/tag)
+      - 标准 <meta name="..."> (description/author/keywords)
+      - canonical URL
+      - JSON-LD (Article/NewsArticle/BlogPosting)
+    """
+    result: dict = {}
+
+    def _meta_content(prop: Optional[str] = None, name: Optional[str] = None) -> str:
+        if prop:
+            tag = soup.find("meta", property=prop)
+        else:
+            tag = soup.find("meta", attrs={"name": name})
+        return (tag.get("content", "").strip() if tag else "") or ""  # type: ignore[union-attr]
+
+    # ── Open Graph ──────────────────────────────────────────────────────────
+    og: dict = {}
+    for key in ("title", "description", "type", "image", "url", "site_name"):
+        val = _meta_content(prop=f"og:{key}")
+        if val:
+            og[key] = val
+    if og:
+        result["og"] = og
+
+    # ── Article 元数据 ───────────────────────────────────────────────────────
+    article: dict = {}
+    for key in ("published_time", "modified_time", "author", "section"):
+        val = _meta_content(prop=f"article:{key}")
+        if val:
+            article[key] = val
+    tags = [t.get("content", "").strip() for t in soup.find_all("meta", property="article:tag") if t.get("content")]
+    if tags:
+        article["tags"] = tags
+    if article:
+        result["article"] = article
+
+    # ── 标准 <meta name="..."> ───────────────────────────────────────────────
+    for field_name, meta_name in [("description", "description"), ("author", "author"), ("keywords", "keywords")]:
+        val = _meta_content(name=meta_name)
+        if val and field_name not in result:
+            result[field_name] = val
+
+    # ── Canonical URL ────────────────────────────────────────────────────────
+    canonical_tag = soup.find("link", rel="canonical")
+    if canonical_tag:
+        href = canonical_tag.get("href", "").strip()  # type: ignore[union-attr]
+        if href:
+            result["canonical"] = urljoin(base_url, href)
+
+    # ── 发布时间补充来源（itemprop="datePublished"）──────────────────────────
+    if not result.get("article", {}).get("published_time"):
+        dt_tag = soup.find(attrs={"itemprop": "datePublished"})
+        if dt_tag:
+            pub = dt_tag.get("content") or dt_tag.get_text(strip=True)  # type: ignore[union-attr]
+            if pub:
+                result.setdefault("article", {})["published_time"] = pub.strip()
+
+    # ── JSON-LD ──────────────────────────────────────────────────────────────
+    _ARTICLE_TYPES = {"Article", "NewsArticle", "BlogPosting", "WebPage", "TechArticle", "Report"}
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("@type") not in _ARTICLE_TYPES:
+                    continue
+                ld: dict = {}
+                for field_name, ld_key in [
+                    ("headline", "headline"),
+                    ("description", "description"),
+                    ("date_published", "datePublished"),
+                    ("date_modified", "dateModified"),
+                    ("url", "url"),
+                ]:
+                    val = item.get(ld_key, "")
+                    if val:
+                        ld[field_name] = val
+                # Author（单个或列表）
+                author = item.get("author", "")
+                if isinstance(author, dict):
+                    author = author.get("name", "")
+                elif isinstance(author, list):
+                    author = ", ".join(
+                        a.get("name", "") if isinstance(a, dict) else str(a) for a in author
+                    )
+                if author:
+                    ld["author"] = author
+                if ld:
+                    result["json_ld"] = ld
+                    break
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    return result
+
+
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     """提取所有 <a href> 链接，转为绝对 URL，去重。"""
     seen: set[str] = set()
@@ -358,6 +459,7 @@ async def extract(
     images: bool = False,
     rss: bool = False,
     retries: int = 2,
+    meta: bool = False,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -450,6 +552,7 @@ async def extract(
         title = _extract_title(soup)
         links = _extract_links(soup, str(response.url))
         imgs = _extract_images(soup, str(response.url)) if images else []
+        metadata = _extract_meta(soup, str(response.url)) if meta else {}
 
         # 尝试从 HTML 中提取嵌入 state（Next.js SSR 等）
         # 成功则直接返回结构化数据，无需浏览器，速度同 Level 1
@@ -464,6 +567,7 @@ async def extract(
                 text=state_to_text(state_var, state_data),
                 links=links,
                 images=imgs,
+                meta=metadata,
                 elapsed_ms=round(elapsed, 1),
                 state_var=state_var,
             )
@@ -484,6 +588,7 @@ async def extract(
             text=text,
             links=links,
             images=imgs,
+            meta=metadata,
             elapsed_ms=round(elapsed, 1),
         )
 
