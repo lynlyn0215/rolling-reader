@@ -10,9 +10,10 @@ Level 1 → Level 2 → Level 3
   - Level 1 抛出 ExtractionError  → 升级到 Level 2（网络失败也值得用浏览器重试）
   - --force-level N              → 跳过前面的层级
 
-未来扩展：
-  - Level 2 → Level 3：检测到 __PRELOADED_STATE__ 等 JS state 变量后升级
-  - Profile Cache：命中缓存时直接跳到已知层级
+Profile Cache v0.2 行为：
+  - TTL 从 last_success 起算 7 天（原 discovered_at 30 天）
+  - 软失败：连续失败 < 3 次保留 cache，≥3 次才硬删
+  - L2/3 reprobe：每成功 20 次，下次命中时悄悄试一次 L1，成功则自动降级
 """
 
 from __future__ import annotations
@@ -80,23 +81,45 @@ async def dispatch(
         cached = profile_cache.load(url)
         if cached:
             preferred = cached.get("preferred_level", 1)
-            log(f"cache hit → Level {preferred} for {cached.get('domain')}")
+            reprobe_due = cached.get("reprobe_due", False)
+            log(f"cache hit → Level {preferred} for {cached.get('domain')}"
+                + (" [reprobe_due]" if reprobe_due else ""))
+
             if preferred == 1:
                 try:
                     result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
                     profile_cache.save(url, result.level)
                     return result
                 except (NeedsBrowserError, ExtractionError) as e:
-                    log(f"cache: Level 1 failed ({e.reason}), invalidating and re-exploring")
-                    profile_cache.invalidate(url)
+                    hard = profile_cache.record_failure(url)
+                    log(f"cache: Level 1 failed ({e.reason}), "
+                        + ("hard-invalidated, re-exploring" if hard else f"soft-fail ({cached.get('failure_count', 0)+1}/{profile_cache.SOFT_FAIL_THRESHOLD}), re-exploring"))
+                # 软失败后继续走自动升级逻辑（不 return）
+
             else:
+                # L2/3 reprobe：悄悄试一次 L1，看站点是否已 SSR 化
+                if reprobe_due and await is_chrome_available(cdp_endpoint):
+                    log("reprobe: trying L1 to check if site now supports SSR")
+                    try:
+                        result = await http_extract(url, timeout=http_timeout, clean=clean, images=images, rss=rss, retries=retries, meta=meta)
+                        import sys
+                        print(f"rr: reprobe succeeded L1 for {cached.get('domain')}, downgrading cache", file=sys.stderr)
+                        profile_cache.save(url, result.level)
+                        return result
+                    except (NeedsBrowserError, ExtractionError):
+                        log("reprobe: L1 still fails, staying on L2/3")
+                        # reprobe_due 在下次 save() 时会重置，继续走 L2
+
                 try:
                     result = await _browser_extract(url, cdp_endpoint, page_timeout, log, clean=clean, images=images, rss=rss)
                     profile_cache.save(url, result.level, state_var=result.state_var)
                     return result
                 except (NeedsBrowserError, ExtractionError) as e:
-                    log(f"cache: browser path failed ({e.reason}), invalidating and re-exploring")
-                    profile_cache.invalidate(url)
+                    hard = profile_cache.record_failure(url)
+                    log(f"cache: browser path failed ({e.reason}), "
+                        + ("hard-invalidated" if hard else "soft-fail"))
+                    if not hard:
+                        raise  # 软失败：直接把错误抛出，不降级重探
 
     # ── 自动升级探索 ──────────────────────────────────────────────────────
 
