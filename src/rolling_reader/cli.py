@@ -69,9 +69,11 @@ def scrape_cmd(
     clean: bool = typer.Option(False, "--clean", "-c"),
     images: bool = typer.Option(False, "--images", help="Extract og:image and article images"),
     rss: bool = typer.Option(False, "--rss", help="Parse RSS/Atom feeds into structured JSON array"),
+    retries: int = typer.Option(2, "--retries", help="Max retries on 429/503 (default: 2)"),
+    text: bool = typer.Option(False, "--text", help="Output only the text content to stdout (pipeline-friendly)"),
 ) -> None:
     """Scrape a single URL."""
-    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images, rss)
+    _run_scrape(url, output, force_level, json_path, no_cache, cdp_endpoint, verbose, clean, images, rss, retries, text)
 
 
 def _run_scrape(
@@ -85,6 +87,8 @@ def _run_scrape(
     clean: bool,
     images: bool = False,
     rss: bool = False,
+    retries: int = 2,
+    text: bool = False,
 ) -> None:
     """单 URL 抓取的核心逻辑（被 callback 和 scrape 共用）。"""
     try:
@@ -97,6 +101,7 @@ def _run_scrape(
             clean=clean,
             images=images,
             rss=rss,
+            retries=retries,
         ))
     except ExtractionError as e:
         _print_error(e)
@@ -115,6 +120,11 @@ def _run_scrape(
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         raise typer.Exit(code=130)
+
+    # --text: 只输出正文，适合管道（rr url --text | llm / grep 等）
+    if text:
+        typer.echo(result.text)
+        return
 
     if json_path:
         value = _resolve_json_path(result.to_dict(), json_path)
@@ -138,8 +148,8 @@ def _run_scrape(
 @app.command()
 def batch(
     inputs: list[str] = typer.Argument(
-        ...,
-        help="URLs to scrape, or a path to a text file containing one URL per line",
+        None,
+        help="URLs to scrape, a path to a text file (one URL per line), or '-' to read from stdin",
     ),
     output: BatchOutputFormat = typer.Option(
         BatchOutputFormat.jsonl,
@@ -172,6 +182,10 @@ def batch(
         False, "--verbose", "-v",
         help="Print per-URL progress to stderr",
     ),
+    retries: int = typer.Option(
+        2, "--retries",
+        help="Max retries on 429/503 per URL (default: 2)",
+    ),
 ) -> None:
     """Scrape multiple URLs in parallel.
 
@@ -185,7 +199,7 @@ def batch(
 
         rr batch urls.txt --clean --output jsonl > results.jsonl
     """
-    urls = _resolve_inputs(inputs)
+    urls = _resolve_inputs(inputs or [])
     if not urls:
         typer.echo("Error: no URLs found.", err=True)
         raise typer.Exit(code=1)
@@ -207,6 +221,7 @@ def batch(
         no_cache=no_cache,
         cdp_endpoint=cdp_endpoint,
         verbose=verbose,
+        retries=retries,
     ))
 
     # ── 输出 ────────────────────────────────────────────────────────────────
@@ -227,17 +242,27 @@ def batch(
 def _resolve_inputs(inputs: list[str]) -> list[str]:
     """
     把命令行 inputs 解析为 URL 列表。
-    - 如果只有一个参数且看起来像文件路径 → 读文件
-    - 否则直接当 URL 列表用
+    - 无参数或 '-'             → 从 stdin 读取（支持管道：opencli-rs ... | rr batch --clean）
+    - 单个非 http 参数         → 当作文件路径读取
+    - 其余                    → 直接当 URL 列表
     """
-    import os
-    if len(inputs) == 1 and not inputs[0].startswith("http"):
+    import os, sys
+
+    # stdin 模式：无参数 或 显式 '-'
+    if not inputs or inputs == ["-"]:
+        if sys.stdin.isatty():
+            typer.echo("Error: no URLs provided. Pass URLs, a file path, or pipe via stdin.", err=True)
+            raise typer.Exit(code=1)
+        lines = [l.strip() for l in sys.stdin if l.strip() and not l.strip().startswith("#")]
+        return lines
+
+    if len(inputs) == 1 and not inputs[0].startswith("http") and inputs[0] != "-":
         path = inputs[0]
         if not os.path.exists(path):
             typer.echo(f"Error: file not found: {path}", err=True)
             raise typer.Exit(code=1)
         with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
         return lines
     return [u for u in inputs if u.strip()]
 
@@ -251,6 +276,7 @@ async def _run_batch(
     no_cache: bool,
     cdp_endpoint: str,
     verbose: bool,
+    retries: int = 2,
 ) -> list[dict]:
     """并发执行批量抓取，返回结果列表（保持输入顺序）。"""
     semaphore = asyncio.Semaphore(concurrency)
@@ -266,6 +292,7 @@ async def _run_batch(
                     verbose=False,
                     use_cache=not no_cache,
                     clean=clean,
+                    retries=retries,
                 )
                 results[idx] = result.to_dict()
                 if verbose:

@@ -357,6 +357,7 @@ async def extract(
     clean: bool = False,
     images: bool = False,
     rss: bool = False,
+    retries: int = 2,
 ) -> ExtractResult:
     """
     Level 1 HTTP 抓取。
@@ -366,6 +367,7 @@ async def extract(
         timeout: 请求超时秒数
         headers: 额外请求头（会合并到 DEFAULT_HEADERS）
         client:  可复用的 httpx.AsyncClient（不传则自动创建）
+        retries: 429/503 时最大重试次数（0 = 不重试）
 
     Returns:
         ExtractResult
@@ -374,6 +376,8 @@ async def extract(
         NeedsBrowserError: 页面需要浏览器渲染
         ExtractionError:   请求或解析失败
     """
+    import asyncio as _asyncio
+
     # Wikimedia 系站点需要特殊 User-Agent（不能伪装成浏览器）
     parsed_host = urlparse(url).hostname or ""
     if any(parsed_host.endswith(h) for h in _WIKIMEDIA_HOSTS):
@@ -384,12 +388,41 @@ async def extract(
 
     async def _do_request(c: httpx.AsyncClient) -> ExtractResult:
         t0 = time.perf_counter()
-        try:
-            response = await c.get(url, follow_redirects=True)
-        except httpx.TimeoutException as e:
-            raise ExtractionError(url, f"timeout: {e}") from e
-        except httpx.RequestError as e:
-            raise ExtractionError(url, f"request error: {e}") from e
+
+        # 重试循环：429/503 指数退避，尊重 Retry-After 头
+        response = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                # Retry-After 头优先，否则指数退避 (1s, 2s, 4s…)
+                retry_after = 2 ** (attempt - 1)
+                if response is not None:
+                    try:
+                        retry_after = float(response.headers.get("retry-after", retry_after))
+                    except (ValueError, TypeError):
+                        pass
+                import sys
+                print(f"rr: retry {attempt}/{retries} after {retry_after:.0f}s ({url})", file=sys.stderr)
+                await _asyncio.sleep(retry_after)
+
+            try:
+                response = await c.get(url, follow_redirects=True)
+            except httpx.TimeoutException as e:
+                last_exc = e
+                if attempt < retries:
+                    continue
+                raise ExtractionError(url, f"timeout after {retries + 1} attempt(s): {e}") from e
+            except httpx.RequestError as e:
+                last_exc = e
+                if attempt < retries:
+                    continue
+                raise ExtractionError(url, f"request error: {e}") from e
+
+            # 429 Rate-limited / 503 暂时不可用 → 重试
+            if response.status_code in (429, 503) and attempt < retries:
+                continue
+            break  # 成功或不可重试状态
+
         elapsed = (time.perf_counter() - t0) * 1000
 
         # 判断是否需要浏览器
