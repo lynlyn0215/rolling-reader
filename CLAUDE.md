@@ -119,7 +119,7 @@ PyPI 最新发布版本为 v0.6.8（token 问题暂时无法发布新版）。
 ## 发布到 PyPI
 
 ```bash
-cd C:\Users\lamso\Desktop\rolling-reader
+cd C:\Users\<your-username>\Desktop\rolling-reader
 python -m build
 TWINE_USERNAME=__token__ TWINE_PASSWORD=<token> twine upload dist/*
 ```
@@ -128,7 +128,7 @@ TWINE_USERNAME=__token__ TWINE_PASSWORD=<token> twine upload dist/*
 
 ## newsfeed 集成（enrichment pipeline）
 
-`C:\Users\lamso\Desktop\newsfeed\collectors\__init__.py` 用 rr 做两件事：
+`C:\Users\<your-username>\Desktop\newsfeed\collectors\__init__.py` 用 rr 做两件事：
 1. `run_rr(url)` — 抓任意 URL 正文作为 RawArticle
 2. `enrich_article()` — 对 body < 300 字的文章补全全文，上限 8000 字
 
